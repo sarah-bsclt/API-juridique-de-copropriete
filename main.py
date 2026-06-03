@@ -8,8 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="API juridique PISTE - Agent copropriété",
-    version="5.1.0",
-    description="API complète copropriété compatible pipeline, avec traitement profil par profil."
+    version="6.0.0",
+    description=(
+        "API allégée : jurisprudence, textes ciblés par profil, "
+        "et textes postérieurs au décret n°2020-834 du 2 juillet 2020."
+    )
 )
 
 app.add_middleware(
@@ -26,11 +29,18 @@ PISTE_CLIENT_SECRET = os.getenv("PISTE_CLIENT_SECRET")
 PISTE_KEY_ID = os.getenv("PISTE_KEY_ID")
 PISTE_ENV = os.getenv("PISTE_ENV", "sandbox").lower()
 
-PAGE_SIZE_LEGIFRANCE = int(os.getenv("PAGE_SIZE_LEGIFRANCE", "5"))
+PAGE_SIZE_LEGIFRANCE = int(os.getenv("PAGE_SIZE_LEGIFRANCE", "3"))
 PAGE_SIZE_JUDILIBRE = int(os.getenv("PAGE_SIZE_JUDILIBRE", "5"))
 
-MAX_REQUETES_LEGIFRANCE_PAR_PROFIL = int(os.getenv("MAX_REQUETES_LEGIFRANCE_PAR_PROFIL", "25"))
-MAX_REQUETES_JUDILIBRE_PAR_PROFIL = int(os.getenv("MAX_REQUETES_JUDILIBRE_PAR_PROFIL", "12"))
+MAX_REQUETES_TEXTES_CIBLES_PAR_PROFIL = int(
+    os.getenv("MAX_REQUETES_TEXTES_CIBLES_PAR_PROFIL", "6")
+)
+MAX_REQUETES_POST_2020_PAR_PROFIL = int(
+    os.getenv("MAX_REQUETES_POST_2020_PAR_PROFIL", "4")
+)
+MAX_REQUETES_JURISPRUDENCE_PAR_PROFIL = int(
+    os.getenv("MAX_REQUETES_JURISPRUDENCE_PAR_PROFIL", "8")
+)
 
 if PISTE_ENV == "production":
     TOKEN_URL = "https://oauth.piste.gouv.fr/api/oauth/token"
@@ -65,7 +75,7 @@ def get_token() -> Optional[str]:
             TOKEN_URL,
             data={"grant_type": "client_credentials"},
             auth=(PISTE_CLIENT_ID, PISTE_CLIENT_SECRET),
-            timeout=30
+            timeout=25
         )
 
         if response.status_code != 200:
@@ -91,86 +101,167 @@ def unique(values: List[str]) -> List[str]:
     return result
 
 
-def construire_requetes_completes(requete: RequeteJuridique) -> Dict[str, List[str]]:
+def construire_requetes(requete: RequeteJuridique) -> Dict[str, List[str]]:
+    profil = requete.profil.lower()
+    label = requete.label.lower()
+    principal = requete.requete_principale
+
     base = [
-        requete.requete_principale,
+        principal,
         *requete.requetes_secondaires,
         *requete.articles_prioritaires,
     ]
 
-    textes_loi_1965 = [
-        "loi n°65-557 du 10 juillet 1965 copropriété",
-        "loi n°65-557 du 10 juillet 1965 article 1",
-        "loi n°65-557 du 10 juillet 1965 article 3",
-        "loi n°65-557 du 10 juillet 1965 article 5",
-        "loi n°65-557 du 10 juillet 1965 article 6-2",
-        "loi n°65-557 du 10 juillet 1965 article 6-3",
-        "loi n°65-557 du 10 juillet 1965 article 6-4",
-        "loi n°65-557 du 10 juillet 1965 article 8",
-        "loi n°65-557 du 10 juillet 1965 article 10",
-        "loi n°65-557 du 10 juillet 1965 article 11",
-        "loi n°65-557 du 10 juillet 1965 article 12",
-        "loi n°65-557 du 10 juillet 1965 article 24",
-        "loi n°65-557 du 10 juillet 1965 article 25",
-        "loi n°65-557 du 10 juillet 1965 article 26",
-        "loi n°65-557 du 10 juillet 1965 article 43",
-    ]
-
-    decrets_reglements = [
-        "décret n°67-223 du 17 mars 1967 copropriété",
-        "décret n°55-22 du 4 janvier 1955 publicité foncière",
-        "décret n°55-1350 du 14 octobre 1955 état descriptif de division",
-        "état descriptif de division publicité foncière copropriété",
-        "règlement de copropriété état descriptif de division",
-    ]
-
-    reformes_copropriete = [
-        "loi SRU n°2000-1208 du 13 décembre 2000 copropriété",
-        "loi ENL n°2006-872 du 13 juillet 2006 copropriété",
-        "loi MOLLE n°2009-323 du 25 mars 2009 copropriété",
-        "loi ALUR n°2014-366 du 24 mars 2014 copropriété",
-        "loi ELAN n°2018-1021 du 23 novembre 2018 copropriété",
-        "ordonnance n°2019-1101 du 30 octobre 2019 copropriété",
-        "décret n°2020-834 du 2 juillet 2020 copropriété",
-        "loi 3DS n°2022-217 du 21 février 2022 copropriété",
-    ]
-
-    codes = [
-        "Code civil servitude fonds servant fonds dominant",
-        "Code civil extinction servitude réunion des fonds",
-        "Code civil droit de propriété servitude copropriété",
-        "Code de la construction et de l'habitation copropriété division immeuble",
-        "Code de l'urbanisme changement destination usage lot copropriété",
-    ]
-
-    sources_thematiques = [
+    textes_cibles = [
         *base,
-        f"{requete.requete_principale} loi 10 juillet 1965",
-        f"{requete.requete_principale} décret 17 mars 1967",
-        f"{requete.requete_principale} règlement de copropriété",
-        f"{requete.requete_principale} état descriptif de division",
+        f"{principal} copropriété loi 10 juillet 1965",
+        f"{principal} règlement de copropriété",
+        f"{principal} état descriptif de division",
+        f"{principal} décret 17 mars 1967",
     ]
 
     jurisprudence = [
-        f"{requete.requete_principale} Cour de cassation copropriété",
-        f"{requete.requete_principale} chambre civile 3 copropriété",
-        f"{requete.requete_principale} jurisprudence copropriété",
+        f"{principal} Cour de cassation copropriété",
+        f"{principal} chambre civile 3 copropriété",
+        f"{principal} jurisprudence copropriété",
         f"{requete.label} Cour de cassation copropriété",
-        "article 5 loi 10 juillet 1965 tantièmes copropriété jurisprudence",
-        "article 10 loi 10 juillet 1965 charges copropriété jurisprudence",
-        "article 43 loi 10 juillet 1965 clause réputée non écrite copropriété jurisprudence",
-        "parties communes spéciales copropriété Cour de cassation",
-        "jouissance privative partie commune copropriété Cour de cassation",
-        "charges spéciales copropriété utilité objective Cour de cassation",
     ]
 
+    textes_post_2020 = [
+        f"{principal} copropriété après décret 2020-834",
+        f"{principal} copropriété loi 3DS 2022",
+        f"{principal} copropriété réforme après 2020",
+        f"{principal} copropriété texte en vigueur 2021 2022 2023 2024 2025",
+    ]
+
+    mots = f"{profil} {label} {principal}".lower()
+
+    if "parties_communes_speciales" in mots or "parties communes spéciales" in mots or "parties communes speciales" in mots:
+        textes_cibles += [
+            "parties communes spéciales copropriété article 6-2",
+            "parties communes spéciales lots concernés copropriété",
+            "charges spéciales parties communes spéciales copropriété",
+        ]
+        jurisprudence += [
+            "parties communes spéciales règlement copropriété Cour de cassation",
+            "parties communes spéciales charges spéciales copropriété jurisprudence",
+        ]
+        textes_post_2020 += [
+            "parties communes spéciales copropriété après ordonnance 2019 décret 2020",
+            "parties communes spéciales copropriété loi 3DS 2022",
+        ]
+
+    if "jouissance" in mots:
+        textes_cibles += [
+            "jouissance privative partie commune copropriété article 6-3",
+            "droit de jouissance privative lot bénéficiaire copropriété",
+            "jouissance privative règlement de copropriété",
+        ]
+        jurisprudence += [
+            "jouissance privative partie commune copropriété Cour de cassation",
+            "droit de jouissance privative copropriété jurisprudence",
+        ]
+        textes_post_2020 += [
+            "jouissance privative copropriété après décret 2020-834",
+            "jouissance privative copropriété loi 3DS 2022",
+        ]
+
+    if "charges" in mots:
+        textes_cibles += [
+            "charges générales copropriété article 10 loi 1965",
+            "charges spéciales copropriété article 10 loi 1965",
+            "services collectifs éléments équipement commun utilité objective article 10",
+        ]
+        jurisprudence += [
+            "charges copropriété utilité objective article 10 Cour de cassation",
+            "clause répartition charges copropriété réputée non écrite",
+            "répartition charges copropriété article 10 jurisprudence",
+        ]
+        textes_post_2020 += [
+            "charges copropriété après décret 2020-834",
+            "charges copropriété loi 3DS 2022",
+        ]
+
+    if "tantieme" in mots or "tantième" in mots or "quote" in mots:
+        textes_cibles += [
+            "calcul tantièmes copropriété article 5 loi 1965",
+            "quote-part parties communes article 5 loi 1965",
+            "répartition tantièmes état descriptif de division copropriété",
+        ]
+        jurisprudence += [
+            "calcul tantièmes copropriété article 5 Cour de cassation",
+            "répartition tantièmes charges copropriété jurisprudence",
+        ]
+        textes_post_2020 += [
+            "tantièmes copropriété après décret 2020-834",
+            "quote-part copropriété loi 3DS 2022",
+        ]
+
+    if "lot" in mots or "lots" in mots or "division" in mots or "réunion" in mots or "reunion" in mots:
+        textes_cibles += [
+            "lot de copropriété état descriptif de division",
+            "division lot copropriété état descriptif de division",
+            "réunion lots copropriété modificatif état descriptif de division",
+            "création suppression lot copropriété publicité foncière",
+        ]
+        jurisprudence += [
+            "division lot copropriété état descriptif de division Cour de cassation",
+            "réunion lots copropriété modificatif jurisprudence",
+            "suppression lot copropriété jurisprudence",
+        ]
+        textes_post_2020 += [
+            "lot copropriété état descriptif de division après décret 2020",
+            "division lot copropriété loi 3DS 2022",
+        ]
+
+    if "destination" in mots or "usage" in mots:
+        textes_cibles += [
+            "destination immeuble règlement copropriété article 8 loi 1965",
+            "changement usage lot copropriété règlement de copropriété",
+            "changement destination lot copropriété",
+        ]
+        jurisprudence += [
+            "changement destination lot copropriété règlement Cour de cassation",
+            "destination immeuble copropriété jurisprudence",
+        ]
+        textes_post_2020 += [
+            "destination immeuble copropriété après décret 2020",
+            "changement usage lot copropriété loi 3DS 2022",
+        ]
+
+    if "servitude" in mots:
+        textes_cibles += [
+            "Code civil servitude de passage copropriété",
+            "Code civil fonds servant fonds dominant servitude",
+            "servitude copropriété publicité foncière",
+        ]
+        jurisprudence += [
+            "servitude copropriété fonds servant fonds dominant Cour de cassation",
+            "servitude de passage copropriété jurisprudence",
+        ]
+        textes_post_2020 += [
+            "servitude copropriété après 2020",
+            "servitude copropriété loi 3DS 2022",
+        ]
+
+    if "chauffage" in mots:
+        textes_cibles += [
+            "chauffage collectif copropriété charges article 10",
+            "individualisation frais chauffage copropriété",
+            "répartition charges chauffage collectif copropriété",
+        ]
+        jurisprudence += [
+            "chauffage collectif charges copropriété utilité objective Cour de cassation",
+        ]
+        textes_post_2020 += [
+            "chauffage collectif copropriété réglementation après 2020",
+            "individualisation frais chauffage copropriété 2021 2022 2023 2024",
+        ]
+
     return {
-        "textes_loi_1965": unique(textes_loi_1965),
-        "decrets_reglements": unique(decrets_reglements),
-        "reformes_copropriete": unique(reformes_copropriete),
-        "codes": unique(codes),
-        "sources_thematiques": unique(sources_thematiques),
-        "jurisprudence": unique(jurisprudence),
+        "textes_cibles": unique(textes_cibles)[:MAX_REQUETES_TEXTES_CIBLES_PAR_PROFIL],
+        "textes_post_2020": unique(textes_post_2020)[:MAX_REQUETES_POST_2020_PAR_PROFIL],
+        "jurisprudence": unique(jurisprudence)[:MAX_REQUETES_JURISPRUDENCE_PAR_PROFIL],
     }
 
 
@@ -210,7 +301,7 @@ def search_legifrance(token: Optional[str], query: str) -> List[Dict[str, Any]]:
             LEGIFRANCE_URL,
             headers=headers,
             json=payload,
-            timeout=20
+            timeout=18
         )
 
         if response.status_code != 200:
@@ -240,7 +331,7 @@ def search_judilibre(query: str) -> List[Dict[str, Any]]:
             JUDILIBRE_URL,
             headers=headers,
             params=params,
-            timeout=20
+            timeout=18
         )
 
         if response.status_code != 200:
@@ -269,29 +360,48 @@ def extraire_titre(item: Dict[str, Any]) -> str:
 
 
 def extraire_date(item: Dict[str, Any]) -> str:
-    for key in ["date", "decision_date", "dateDecision", "datePublication", "startDate", "dateSignature"]:
+    for key in [
+        "date",
+        "decision_date",
+        "dateDecision",
+        "datePublication",
+        "startDate",
+        "dateSignature"
+    ]:
         if item.get(key):
             return str(item.get(key))
+
     return ""
 
 
 def extraire_texte(item: Dict[str, Any]) -> str:
-    for key in ["text", "texte", "snippet", "sommaire", "solution", "summary", "resume"]:
+    for key in [
+        "text",
+        "texte",
+        "snippet",
+        "sommaire",
+        "solution",
+        "summary",
+        "resume"
+    ]:
         if item.get(key):
             return str(item.get(key))
 
     sections = item.get("sections")
     if isinstance(sections, list):
         extracts = []
+
         for section in sections:
             for extract in section.get("extracts", []):
                 values = extract.get("values", [])
+
                 if isinstance(values, list):
                     extracts.extend([str(value) for value in values])
+
         if extracts:
             return "\n".join(extracts)
 
-    return str(item)[:5000]
+    return str(item)[:4000]
 
 
 def normaliser_resultats(
@@ -319,7 +429,7 @@ def normaliser_resultats(
             "nature": item.get("nature") or item.get("type") or item.get("origin"),
             "juridiction": item.get("jurisdiction") or item.get("juridiction"),
             "identifiant": item.get("id") or item.get("cid") or item.get("num"),
-            "resume": texte[:4000],
+            "resume": texte[:2500],
             "donnee_originale": item
         })
 
@@ -336,7 +446,7 @@ def dedupliquer(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             source.get("categorie"),
             source.get("identifiant"),
             source.get("titre"),
-            source.get("resume", "")[:300]
+            source.get("resume", "")[:250]
         )
 
         cle_txt = str(cle).lower()
@@ -349,53 +459,39 @@ def dedupliquer(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def traiter_profil(token: Optional[str], requete: RequeteJuridique) -> Dict[str, Any]:
-    requetes = construire_requetes_completes(requete)
+    requetes = construire_requetes(requete)
 
-    blocs = {
-        "textes_loi_1965": [],
-        "decrets_reglements": [],
-        "reformes_copropriete": [],
-        "codes": [],
-        "sources_thematiques": [],
-        "jurisprudence": [],
-    }
+    textes_cibles = []
+    textes_post_2020 = []
+    jurisprudence = []
 
-    compteur_legifrance = 0
-
-    for categorie in [
-        "textes_loi_1965",
-        "decrets_reglements",
-        "reformes_copropriete",
-        "codes",
-        "sources_thematiques"
-    ]:
-        for q in requetes[categorie]:
-            if compteur_legifrance >= MAX_REQUETES_LEGIFRANCE_PAR_PROFIL:
-                break
-
-            bruts = search_legifrance(token, q)
-            compteur_legifrance += 1
-
-            blocs[categorie].extend(
-                normaliser_resultats(
-                    bruts,
-                    source="legifrance",
-                    categorie=categorie,
-                    requete_origine=q,
-                    profil=requete.profil
-                )
+    for q in requetes["textes_cibles"]:
+        bruts = search_legifrance(token, q)
+        textes_cibles.extend(
+            normaliser_resultats(
+                bruts,
+                source="legifrance",
+                categorie="textes_cibles",
+                requete_origine=q,
+                profil=requete.profil
             )
+        )
 
-    compteur_judilibre = 0
+    for q in requetes["textes_post_2020"]:
+        bruts = search_legifrance(token, q)
+        textes_post_2020.extend(
+            normaliser_resultats(
+                bruts,
+                source="legifrance",
+                categorie="textes_post_2020",
+                requete_origine=q,
+                profil=requete.profil
+            )
+        )
 
     for q in requetes["jurisprudence"]:
-        if compteur_judilibre >= MAX_REQUETES_JUDILIBRE_PAR_PROFIL:
-            break
-
         bruts = search_judilibre(q)
-        compteur_judilibre += 1
-
-        blocs["jurisprudence"].extend(
+        jurisprudence.extend(
             normaliser_resultats(
                 bruts,
                 source="judilibre",
@@ -405,12 +501,14 @@ def traiter_profil(token: Optional[str], requete: RequeteJuridique) -> Dict[str,
             )
         )
 
-    for categorie in blocs:
-        blocs[categorie] = dedupliquer(blocs[categorie])
+    textes_cibles = dedupliquer(textes_cibles)
+    textes_post_2020 = dedupliquer(textes_post_2020)
+    jurisprudence = dedupliquer(jurisprudence)
 
-    tous_resultats = []
-    for categorie in blocs:
-        tous_resultats.extend(blocs[categorie])
+    resultats_juridiques = []
+    resultats_juridiques.extend(textes_cibles)
+    resultats_juridiques.extend(textes_post_2020)
+    resultats_juridiques.extend(jurisprudence)
 
     return {
         "profil": requete.profil,
@@ -421,16 +519,16 @@ def traiter_profil(token: Optional[str], requete: RequeteJuridique) -> Dict[str,
         "requete_principale": requete.requete_principale,
         "requetes_executees": requetes,
         "points_de_controle": requete.points_de_controle,
-        "textes_loi_1965": blocs["textes_loi_1965"],
-        "decrets_reglements": blocs["decrets_reglements"],
-        "reformes_copropriete": blocs["reformes_copropriete"],
-        "codes": blocs["codes"],
-        "sources_thematiques": blocs["sources_thematiques"],
-        "jurisprudence": blocs["jurisprudence"],
-        "resultats_juridiques": tous_resultats,
-        "nombre_resultats": len(tous_resultats),
-        "nombre_requetes_legifrance_executees": compteur_legifrance,
-        "nombre_requetes_judilibre_executees": compteur_judilibre
+
+        "textes_cibles": textes_cibles,
+        "textes_post_2020": textes_post_2020,
+        "jurisprudence": jurisprudence,
+
+        "resultats_juridiques": resultats_juridiques,
+        "nombre_resultats": len(resultats_juridiques),
+        "nombre_requetes_textes_cibles": len(requetes["textes_cibles"]),
+        "nombre_requetes_textes_post_2020": len(requetes["textes_post_2020"]),
+        "nombre_requetes_jurisprudence": len(requetes["jurisprudence"])
     }
 
 
@@ -438,9 +536,9 @@ def traiter_profil(token: Optional[str], requete: RequeteJuridique) -> Dict[str,
 def accueil():
     return {
         "status": "API active",
-        "version": "5.1.0",
+        "version": "6.0.0",
         "environnement": PISTE_ENV,
-        "message": "API juridique complète copropriété opérationnelle."
+        "message": "API juridique allégée : jurisprudence, textes ciblés, textes postérieurs à 2020."
     }
 
 
@@ -448,12 +546,13 @@ def accueil():
 def health():
     return {
         "status": "ok",
-        "version": "5.1.0",
+        "version": "6.0.0",
         "piste_env": PISTE_ENV,
         "page_size_legifrance": PAGE_SIZE_LEGIFRANCE,
         "page_size_judilibre": PAGE_SIZE_JUDILIBRE,
-        "max_requetes_legifrance_par_profil": MAX_REQUETES_LEGIFRANCE_PAR_PROFIL,
-        "max_requetes_judilibre_par_profil": MAX_REQUETES_JUDILIBRE_PAR_PROFIL,
+        "max_requetes_textes_cibles_par_profil": MAX_REQUETES_TEXTES_CIBLES_PAR_PROFIL,
+        "max_requetes_post_2020_par_profil": MAX_REQUETES_POST_2020_PAR_PROFIL,
+        "max_requetes_jurisprudence_par_profil": MAX_REQUETES_JURISPRUDENCE_PAR_PROFIL,
         "piste_client_id_present": bool(PISTE_CLIENT_ID),
         "piste_client_secret_present": bool(PISTE_CLIENT_SECRET),
         "piste_key_id_present": bool(PISTE_KEY_ID),
@@ -485,7 +584,7 @@ def post_pack_juridique(request: PackJuridiqueRequest):
         "nombre_resultats_juridiques": total,
         "profils": profils,
         "note": (
-            "Pack juridique complet : loi de 1965, décret de 1967, publicité foncière, "
-            "réformes SRU/ALUR/ELAN/ordonnance 2019, codes, sources thématiques et jurisprudence."
+            "API allégée : les grandes réformes jusqu'au décret 2020 doivent provenir du RAG local. "
+            "Render fournit uniquement les textes ciblés, les textes postérieurs à 2020 et la jurisprudence spécifique au profil."
         )
     }
