@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="API juridique PISTE - Agent copropriété",
-    version="5.0.0",
-    description="API complète pour interroger Légifrance et Judilibre pour les dossiers de copropriété."
+    version="5.1.0",
+    description="API complète copropriété compatible pipeline, avec traitement profil par profil."
 )
 
 app.add_middleware(
@@ -26,8 +26,11 @@ PISTE_CLIENT_SECRET = os.getenv("PISTE_CLIENT_SECRET")
 PISTE_KEY_ID = os.getenv("PISTE_KEY_ID")
 PISTE_ENV = os.getenv("PISTE_ENV", "sandbox").lower()
 
-PAGE_SIZE_LEGIFRANCE = int(os.getenv("PAGE_SIZE_LEGIFRANCE", "10"))
-PAGE_SIZE_JUDILIBRE = int(os.getenv("PAGE_SIZE_JUDILIBRE", "10"))
+PAGE_SIZE_LEGIFRANCE = int(os.getenv("PAGE_SIZE_LEGIFRANCE", "5"))
+PAGE_SIZE_JUDILIBRE = int(os.getenv("PAGE_SIZE_JUDILIBRE", "5"))
+
+MAX_REQUETES_LEGIFRANCE_PAR_PROFIL = int(os.getenv("MAX_REQUETES_LEGIFRANCE_PAR_PROFIL", "25"))
+MAX_REQUETES_JUDILIBRE_PAR_PROFIL = int(os.getenv("MAX_REQUETES_JUDILIBRE_PAR_PROFIL", "12"))
 
 if PISTE_ENV == "production":
     TOKEN_URL = "https://oauth.piste.gouv.fr/api/oauth/token"
@@ -54,10 +57,6 @@ class PackJuridiqueRequest(BaseModel):
     dossier_id: str = "DOSSIER_NON_RENSEIGNE"
     type_dossier: str = "copropriete"
     requetes_juridiques: List[RequeteJuridique] = Field(default_factory=list)
-
-    # Compatibilité avec appel simple éventuel
-    query: Optional[str] = None
-    type_operation: Optional[str] = None
 
 
 def get_token() -> Optional[str]:
@@ -92,64 +91,60 @@ def unique(values: List[str]) -> List[str]:
     return result
 
 
-def construire_requetes_completes(requete: RequeteJuridique, type_dossier: str) -> Dict[str, List[str]]:
+def construire_requetes_completes(requete: RequeteJuridique) -> Dict[str, List[str]]:
     base = [
         requete.requete_principale,
         *requete.requetes_secondaires,
         *requete.articles_prioritaires,
     ]
 
-    socle_loi_1965 = [
-        "loi n°65-557 du 10 juillet 1965 statut de la copropriété des immeubles bâtis",
-        "loi n°65-557 du 10 juillet 1965 article 1 copropriété",
-        "loi n°65-557 du 10 juillet 1965 article 2 parties privatives",
-        "loi n°65-557 du 10 juillet 1965 article 3 parties communes",
-        "loi n°65-557 du 10 juillet 1965 article 5 quote-part parties communes",
-        "loi n°65-557 du 10 juillet 1965 article 6-2 parties communes spéciales",
-        "loi n°65-557 du 10 juillet 1965 article 6-3 jouissance privative",
-        "loi n°65-557 du 10 juillet 1965 article 6-4 parties communes spéciales jouissance privative",
-        "loi n°65-557 du 10 juillet 1965 article 8 règlement de copropriété destination immeuble",
-        "loi n°65-557 du 10 juillet 1965 article 10 charges copropriété utilité",
-        "loi n°65-557 du 10 juillet 1965 article 11 modification répartition charges",
-        "loi n°65-557 du 10 juillet 1965 article 12 action révision charges",
-        "loi n°65-557 du 10 juillet 1965 article 24 assemblée générale majorité",
-        "loi n°65-557 du 10 juillet 1965 article 25 majorité absolue",
-        "loi n°65-557 du 10 juillet 1965 article 26 double majorité unanimité",
-        "loi n°65-557 du 10 juillet 1965 article 43 clauses réputées non écrites",
+    textes_loi_1965 = [
+        "loi n°65-557 du 10 juillet 1965 copropriété",
+        "loi n°65-557 du 10 juillet 1965 article 1",
+        "loi n°65-557 du 10 juillet 1965 article 3",
+        "loi n°65-557 du 10 juillet 1965 article 5",
+        "loi n°65-557 du 10 juillet 1965 article 6-2",
+        "loi n°65-557 du 10 juillet 1965 article 6-3",
+        "loi n°65-557 du 10 juillet 1965 article 6-4",
+        "loi n°65-557 du 10 juillet 1965 article 8",
+        "loi n°65-557 du 10 juillet 1965 article 10",
+        "loi n°65-557 du 10 juillet 1965 article 11",
+        "loi n°65-557 du 10 juillet 1965 article 12",
+        "loi n°65-557 du 10 juillet 1965 article 24",
+        "loi n°65-557 du 10 juillet 1965 article 25",
+        "loi n°65-557 du 10 juillet 1965 article 26",
+        "loi n°65-557 du 10 juillet 1965 article 43",
     ]
 
     decrets_reglements = [
         "décret n°67-223 du 17 mars 1967 copropriété",
-        "décret n°55-22 du 4 janvier 1955 publicité foncière état descriptif de division",
-        "décret n°55-1350 du 14 octobre 1955 état descriptif de division publicité foncière",
+        "décret n°55-22 du 4 janvier 1955 publicité foncière",
+        "décret n°55-1350 du 14 octobre 1955 état descriptif de division",
         "état descriptif de division publicité foncière copropriété",
-        "règlement de copropriété état descriptif de division publicité foncière",
+        "règlement de copropriété état descriptif de division",
     ]
 
-    reformes = [
-        "loi SRU n°2000-1208 du 13 décembre 2000 copropriété loi 1965",
+    reformes_copropriete = [
+        "loi SRU n°2000-1208 du 13 décembre 2000 copropriété",
         "loi ENL n°2006-872 du 13 juillet 2006 copropriété",
         "loi MOLLE n°2009-323 du 25 mars 2009 copropriété",
         "loi ALUR n°2014-366 du 24 mars 2014 copropriété",
-        "loi ELAN n°2018-1021 du 23 novembre 2018 copropriété parties communes spéciales jouissance privative",
-        "ordonnance n°2019-1101 du 30 octobre 2019 réforme droit copropriété",
-        "décret n°2020-834 du 2 juillet 2020 copropriété ordonnance 2019",
+        "loi ELAN n°2018-1021 du 23 novembre 2018 copropriété",
+        "ordonnance n°2019-1101 du 30 octobre 2019 copropriété",
+        "décret n°2020-834 du 2 juillet 2020 copropriété",
         "loi 3DS n°2022-217 du 21 février 2022 copropriété",
     ]
 
     codes = [
         "Code civil servitude fonds servant fonds dominant",
         "Code civil extinction servitude réunion des fonds",
-        "Code civil indivision copropriété parties communes",
         "Code civil droit de propriété servitude copropriété",
         "Code de la construction et de l'habitation copropriété division immeuble",
         "Code de l'urbanisme changement destination usage lot copropriété",
     ]
 
-    thematiques = [
+    sources_thematiques = [
         *base,
-        f"{requete.profil} copropriété",
-        f"{requete.label} copropriété",
         f"{requete.requete_principale} loi 10 juillet 1965",
         f"{requete.requete_principale} décret 17 mars 1967",
         f"{requete.requete_principale} règlement de copropriété",
@@ -170,11 +165,11 @@ def construire_requetes_completes(requete: RequeteJuridique, type_dossier: str) 
     ]
 
     return {
-        "textes_loi_1965": unique(socle_loi_1965),
+        "textes_loi_1965": unique(textes_loi_1965),
         "decrets_reglements": unique(decrets_reglements),
-        "reformes_copropriete": unique(reformes),
+        "reformes_copropriete": unique(reformes_copropriete),
         "codes": unique(codes),
-        "sources_thematiques": unique(thematiques),
+        "sources_thematiques": unique(sources_thematiques),
         "jurisprudence": unique(jurisprudence),
     }
 
@@ -215,7 +210,7 @@ def search_legifrance(token: Optional[str], query: str) -> List[Dict[str, Any]]:
             LEGIFRANCE_URL,
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=20
         )
 
         if response.status_code != 200:
@@ -245,7 +240,7 @@ def search_judilibre(query: str) -> List[Dict[str, Any]]:
             JUDILIBRE_URL,
             headers=headers,
             params=params,
-            timeout=30
+            timeout=20
         )
 
         if response.status_code != 200:
@@ -265,7 +260,6 @@ def extraire_titre(item: Dict[str, Any]) -> str:
         return str(item.get("titre"))
 
     titles = item.get("titles")
-
     if isinstance(titles, list) and titles:
         first = titles[0]
         if isinstance(first, dict):
@@ -278,13 +272,6 @@ def extraire_date(item: Dict[str, Any]) -> str:
     for key in ["date", "decision_date", "dateDecision", "datePublication", "startDate", "dateSignature"]:
         if item.get(key):
             return str(item.get(key))
-
-    titles = item.get("titles")
-    if isinstance(titles, list) and titles:
-        first = titles[0]
-        if isinstance(first, dict):
-            return str(first.get("startDate") or "")
-
     return ""
 
 
@@ -320,8 +307,6 @@ def normaliser_resultats(
         if not isinstance(item, dict):
             continue
 
-        titre = extraire_titre(item)
-        date = extraire_date(item)
         texte = extraire_texte(item)
 
         sources.append({
@@ -329,8 +314,8 @@ def normaliser_resultats(
             "categorie": categorie,
             "profil": profil,
             "requete_origine": requete_origine,
-            "titre": titre,
-            "date": date,
+            "titre": extraire_titre(item),
+            "date": extraire_date(item),
             "nature": item.get("nature") or item.get("type") or item.get("origin"),
             "juridiction": item.get("jurisdiction") or item.get("juridiction"),
             "identifiant": item.get("id") or item.get("cid") or item.get("num"),
@@ -363,8 +348,8 @@ def dedupliquer(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return resultats
 
 
-def traiter_profil(token: Optional[str], requete: RequeteJuridique, type_dossier: str) -> Dict[str, Any]:
-    requetes = construire_requetes_completes(requete, type_dossier)
+def traiter_profil(token: Optional[str], requete: RequeteJuridique) -> Dict[str, Any]:
+    requetes = construire_requetes_completes(requete)
 
     blocs = {
         "textes_loi_1965": [],
@@ -375,17 +360,49 @@ def traiter_profil(token: Optional[str], requete: RequeteJuridique, type_dossier
         "jurisprudence": [],
     }
 
-    for categorie in ["textes_loi_1965", "decrets_reglements", "reformes_copropriete", "codes", "sources_thematiques"]:
+    compteur_legifrance = 0
+
+    for categorie in [
+        "textes_loi_1965",
+        "decrets_reglements",
+        "reformes_copropriete",
+        "codes",
+        "sources_thematiques"
+    ]:
         for q in requetes[categorie]:
+            if compteur_legifrance >= MAX_REQUETES_LEGIFRANCE_PAR_PROFIL:
+                break
+
             bruts = search_legifrance(token, q)
+            compteur_legifrance += 1
+
             blocs[categorie].extend(
-                normaliser_resultats(bruts, "legifrance", categorie, q, requete.profil)
+                normaliser_resultats(
+                    bruts,
+                    source="legifrance",
+                    categorie=categorie,
+                    requete_origine=q,
+                    profil=requete.profil
+                )
             )
 
+    compteur_judilibre = 0
+
     for q in requetes["jurisprudence"]:
+        if compteur_judilibre >= MAX_REQUETES_JUDILIBRE_PAR_PROFIL:
+            break
+
         bruts = search_judilibre(q)
+        compteur_judilibre += 1
+
         blocs["jurisprudence"].extend(
-            normaliser_resultats(bruts, "judilibre", "jurisprudence", q, requete.profil)
+            normaliser_resultats(
+                bruts,
+                source="judilibre",
+                categorie="jurisprudence",
+                requete_origine=q,
+                profil=requete.profil
+            )
         )
 
     for categorie in blocs:
@@ -404,16 +421,16 @@ def traiter_profil(token: Optional[str], requete: RequeteJuridique, type_dossier
         "requete_principale": requete.requete_principale,
         "requetes_executees": requetes,
         "points_de_controle": requete.points_de_controle,
-
         "textes_loi_1965": blocs["textes_loi_1965"],
         "decrets_reglements": blocs["decrets_reglements"],
         "reformes_copropriete": blocs["reformes_copropriete"],
         "codes": blocs["codes"],
         "sources_thematiques": blocs["sources_thematiques"],
         "jurisprudence": blocs["jurisprudence"],
-
         "resultats_juridiques": tous_resultats,
-        "nombre_resultats": len(tous_resultats)
+        "nombre_resultats": len(tous_resultats),
+        "nombre_requetes_legifrance_executees": compteur_legifrance,
+        "nombre_requetes_judilibre_executees": compteur_judilibre
     }
 
 
@@ -421,7 +438,7 @@ def traiter_profil(token: Optional[str], requete: RequeteJuridique, type_dossier
 def accueil():
     return {
         "status": "API active",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "environnement": PISTE_ENV,
         "message": "API juridique complète copropriété opérationnelle."
     }
@@ -431,10 +448,12 @@ def accueil():
 def health():
     return {
         "status": "ok",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "piste_env": PISTE_ENV,
-        "legifrance_page_size": PAGE_SIZE_LEGIFRANCE,
-        "judilibre_page_size": PAGE_SIZE_JUDILIBRE,
+        "page_size_legifrance": PAGE_SIZE_LEGIFRANCE,
+        "page_size_judilibre": PAGE_SIZE_JUDILIBRE,
+        "max_requetes_legifrance_par_profil": MAX_REQUETES_LEGIFRANCE_PAR_PROFIL,
+        "max_requetes_judilibre_par_profil": MAX_REQUETES_JUDILIBRE_PAR_PROFIL,
         "piste_client_id_present": bool(PISTE_CLIENT_ID),
         "piste_client_secret_present": bool(PISTE_CLIENT_SECRET),
         "piste_key_id_present": bool(PISTE_KEY_ID),
@@ -445,29 +464,13 @@ def health():
 def post_pack_juridique(request: PackJuridiqueRequest):
     token = get_token()
 
-    requetes = list(request.requetes_juridiques)
-
-    if not requetes and request.query:
-        requetes = [
-            RequeteJuridique(
-                profil=request.type_operation or "recherche_simple",
-                label=request.type_operation or "Recherche simple",
-                niveau_detection="manuel",
-                requete_principale=request.query,
-                requetes_secondaires=[],
-                articles_prioritaires=[],
-                points_de_controle=[]
-            )
-        ]
-
     profils = []
 
-    for requete in requetes:
+    for requete in request.requetes_juridiques:
         profils.append(
             traiter_profil(
                 token=token,
-                requete=requete,
-                type_dossier=request.type_dossier
+                requete=requete
             )
         )
 
@@ -486,16 +489,3 @@ def post_pack_juridique(request: PackJuridiqueRequest):
             "réformes SRU/ALUR/ELAN/ordonnance 2019, codes, sources thématiques et jurisprudence."
         )
     }
-
-
-@app.get("/pack-juridique")
-def get_pack_juridique(query: str, type_dossier: str = "copropriete", type_operation: str = "recherche_simple"):
-    request = PackJuridiqueRequest(
-        dossier_id="REQUETE_GET",
-        type_dossier=type_dossier,
-        query=query,
-        type_operation=type_operation,
-        requetes_juridiques=[]
-    )
-
-    return post_pack_juridique(request)
